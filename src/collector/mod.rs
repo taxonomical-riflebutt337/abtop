@@ -72,6 +72,8 @@ impl MultiCollector {
         for c in &mut self.collectors {
             all.extend(c.collect(&shared));
         }
+        // Hide dead sessions (Done + no live PID)
+        all.retain(|s| !(matches!(s.status, crate::model::SessionStatus::Done) && s.pid == 0));
         all.sort_by_key(|s| std::cmp::Reverse(s.started_at));
         all
     }

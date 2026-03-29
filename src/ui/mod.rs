@@ -492,14 +492,14 @@ fn draw_tokens_panel(f: &mut Frame, app: &App, area: Rect) {
         ),
     ];
 
-    let mut input_line = vec![styled_label(" Input: ")];
+    let mut input_line = vec![styled_label(" Input :")];
     input_line.extend(meter_bar(in_pct, bar_w, &free_grad));
     input_line.push(Span::styled(
         format!(" {}", fmt_tokens(total_in)),
         Style::default().fg(grad_at(&free_grad, 80.0)),
     ));
 
-    let mut output_line = vec![styled_label(" Output: ")];
+    let mut output_line = vec![styled_label(" Output:")];
     output_line.extend(meter_bar(out_pct, bar_w, &used_grad));
     output_line.push(Span::styled(
         format!(" {}", fmt_tokens(total_out)),
