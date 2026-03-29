@@ -250,40 +250,84 @@ fn styled_label(text: &str) -> Span<'static> {
 
 pub fn draw(f: &mut Frame, app: &App) {
     let area = f.area();
+    let h = area.height;
 
-    // Top panel height: header + sessions + summary + borders
-    let top_h: u16 = (app.sessions.len() as u16 + 4).min(10).max(5);
+    // Adaptive layout — shrink context first, then hide it; mid 4-panel row
+    // stays visible as long as possible. Sessions always get remaining space.
+
+    const CONTEXT_MIN: u16 = 3;
+    const MID_MIN: u16 = 4;
+    const FIXED: u16 = 2; // header + footer
+
+    let mid_h_ideal: u16 = 8;
+    // Sessions need: header(1) + border(2) + 1 row per session + detail(2)
+    let sessions_ideal: u16 = (app.sessions.len() as u16 * 2 + 3).max(5);
+    // Context is lowest priority — cap it so sessions get enough space
+    let top_h_ideal: u16 = (app.sessions.len() as u16 + 4).min(10).max(5);
+
+    // Reserve enough for sessions first, then allocate the rest to context+mid
+    let sessions_min = sessions_ideal.min(h.saturating_sub(FIXED) / 2).max(5);
+    let budget = h.saturating_sub(FIXED + sessions_min);
+
+    let (context_h, mid_h) = if budget >= top_h_ideal + mid_h_ideal {
+        (top_h_ideal, mid_h_ideal)
+    } else if budget >= CONTEXT_MIN + mid_h_ideal {
+        (budget - mid_h_ideal, mid_h_ideal)
+    } else if budget >= CONTEXT_MIN + MID_MIN {
+        (CONTEXT_MIN, budget - CONTEXT_MIN)
+    } else {
+        // Not enough for both: drop context, give mid what's left
+        (0, budget)
+    };
+
+    let mut constraints = [Constraint::Length(0); 5];
+    let mut n = 0;
+    constraints[n] = Constraint::Length(1); n += 1; // header
+    if context_h > 0 {
+        constraints[n] = Constraint::Length(context_h); n += 1;
+    }
+    if mid_h > 0 {
+        constraints[n] = Constraint::Length(mid_h); n += 1;
+    }
+    constraints[n] = Constraint::Min(sessions_min); n += 1;
+    constraints[n] = Constraint::Length(1); // footer
+    n += 1;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),      // header bar
-            Constraint::Length(top_h),  // top: context panel
-            Constraint::Length(8),      // mid: quota + tokens + projects + ports
-            Constraint::Min(10),       // sessions (full width)
-            Constraint::Length(1),     // footer
-        ])
+        .constraints(&constraints[..n])
         .split(area);
 
-    draw_header(f, app, chunks[0]);
-    draw_context_panel(f, app, chunks[1]);
+    let mut idx = 0;
+    draw_header(f, app, chunks[idx]);
+    idx += 1;
 
-    let mid_panels = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(25), // quota (rate limit)
-            Constraint::Percentage(25), // tokens
-            Constraint::Percentage(25), // projects
-            Constraint::Percentage(25), // ports
-        ])
-        .split(chunks[2]);
+    if context_h > 0 {
+        draw_context_panel(f, app, chunks[idx]);
+        idx += 1;
+    }
 
-    draw_quota_panel(f, app, mid_panels[0]);
-    draw_tokens_panel(f, app, mid_panels[1]);
-    draw_projects_panel(f, app, mid_panels[2]);
-    draw_ports_panel(f, app, mid_panels[3]);
-    draw_sessions_panel(f, app, chunks[3]);
-    draw_footer(f, app, chunks[4]);
+    if mid_h > 0 {
+        let mid_panels = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(25), // quota (rate limit)
+                Constraint::Percentage(25), // tokens
+                Constraint::Percentage(25), // projects
+                Constraint::Percentage(25), // ports
+            ])
+            .split(chunks[idx]);
+
+        draw_quota_panel(f, app, mid_panels[0]);
+        draw_tokens_panel(f, app, mid_panels[1]);
+        draw_projects_panel(f, app, mid_panels[2]);
+        draw_ports_panel(f, app, mid_panels[3]);
+        idx += 1;
+    }
+
+    draw_sessions_panel(f, app, chunks[idx]);
+    idx += 1;
+    draw_footer(f, app, chunks[idx]);
 }
 
 // ── header bar — btop style: ¹cpu ─ menu ─ preset * ── time ── BAT ──────────
@@ -476,27 +520,15 @@ fn draw_quota_panel(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(Span::styled("  abtop --setup", Style::default().fg(GRAPH_TEXT))));
     } else {
         let bar_w = avail_w.saturating_sub(12).min(12).max(3);
-        let multi_source = app.rate_limits.len() > 1;
         for rl in &app.rate_limits {
-            // Show source label when multiple backends are present
-            if multi_source {
-                let fresh_str = rl.updated_at.map(|ts| {
-                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-                    let ago = now.saturating_sub(ts);
-                    if ago < 60 { format!(" {}s ago", ago) } else { format!(" {}m ago", ago / 60) }
-                }).unwrap_or_default();
-                let label = format!(" {}{}", rl.source.to_uppercase(), fresh_str);
-                lines.push(Line::from(Span::styled(label, Style::default().fg(TITLE).add_modifier(Modifier::BOLD))));
-            } else {
-                let fresh_str = rl.updated_at.map(|ts| {
-                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
-                    let ago = now.saturating_sub(ts);
-                    if ago < 60 { format!("{}s ago", ago) } else { format!("{}m ago", ago / 60) }
-                }).unwrap_or_default();
-                if !fresh_str.is_empty() {
-                    lines.push(Line::from(Span::styled(format!(" {}", fresh_str), Style::default().fg(INACTIVE_FG))));
-                }
-            }
+            // Always show source label (CLAUDE / CODEX) with freshness
+            let fresh_str = rl.updated_at.map(|ts| {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                let ago = now.saturating_sub(ts);
+                if ago < 60 { format!(" {}s ago", ago) } else { format!(" {}m ago", ago / 60) }
+            }).unwrap_or_default();
+            let label = format!(" {}{}", rl.source.to_uppercase(), fresh_str);
+            lines.push(Line::from(Span::styled(label, Style::default().fg(TITLE).add_modifier(Modifier::BOLD))));
             // Cap lines per source so panel doesn't overflow
             if lines.len() >= avail_h.saturating_sub(3) { break; }
             if let Some(pct) = rl.five_hour_pct {
@@ -1041,7 +1073,22 @@ fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(4),   // turn
     ];
 
-    let table = Table::new(rows, widths).header(header);
+    // Scroll: each session = 2 rows. Ensure selected session is visible.
+    let visible_rows = panel_chunks[0].height.saturating_sub(1) as usize; // -1 for header
+    let selected_row_start = app.selected * 2;
+    let selected_row_end = selected_row_start + 2;
+    let scroll_offset = if selected_row_end > visible_rows {
+        selected_row_end - visible_rows
+    } else {
+        0
+    };
+    let visible = if scroll_offset < rows.len() {
+        rows.into_iter().skip(scroll_offset).collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    let table = Table::new(visible, widths).header(header);
     f.render_widget(table, panel_chunks[0]);
 
     // ── Detail section for selected session (full-width Paragraph, not Table) ──
