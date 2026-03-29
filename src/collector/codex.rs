@@ -38,15 +38,19 @@ impl CodexCollector {
 
         // Step 1: Find running codex processes and map to JSONL files
         let codex_pids = Self::find_codex_pids();
-        let pid_to_jsonl = Self::map_pid_to_jsonl(&codex_pids);
+        let just_pids: Vec<u32> = codex_pids.iter().map(|(p, _)| *p).collect();
+        let pid_to_jsonl = Self::map_pid_to_jsonl(&just_pids);
+        let pid_is_exec: HashMap<u32, bool> = codex_pids.into_iter().collect();
 
         let mut sessions = Vec::new();
         let mut seen_jsonl = std::collections::HashSet::new();
 
         // Active sessions: running codex processes with open JSONL files
         for (pid, jsonl_path) in &pid_to_jsonl {
+            let is_exec = pid_is_exec.get(pid).copied().unwrap_or(false);
             if let Some(session) = self.load_session(
                 Some(*pid),
+                is_exec,
                 jsonl_path,
                 &shared.process_info,
                 &shared.children_map,
@@ -82,6 +86,7 @@ impl CodexCollector {
                     }
                     if let Some(session) = self.load_session(
                         None,
+                        false,
                         &path,
                         &shared.process_info,
                         &shared.children_map,
@@ -110,6 +115,7 @@ impl CodexCollector {
     fn load_session(
         &self,
         pid: Option<u32>,
+        is_exec: bool,
         jsonl_path: &Path,
         process_info: &HashMap<u32, ProcInfo>,
         children_map: &HashMap<u32, Vec<u32>>,
@@ -131,8 +137,11 @@ impl CodexCollector {
         // Status detection
         // Note: Codex interactive sessions emit task_complete after every turn,
         // so task_complete alone does NOT mean the session is finished when PID is alive.
+        // However, for exec (one-shot) sessions, task_complete means truly done.
         let pid_alive = proc.is_some();
         let status = if !pid_alive {
+            SessionStatus::Done
+        } else if is_exec && result.task_complete {
             SessionStatus::Done
         } else {
             let since_activity = std::time::SystemTime::now()
@@ -154,9 +163,11 @@ impl CodexCollector {
         };
 
         // Current task from last tool use
+        // For exec (one-shot) sessions, task_complete means truly finished.
+        // For interactive sessions, task_complete fires after every turn — ignore it.
         let current_tasks = if !result.current_task.is_empty() {
             vec![result.current_task]
-        } else if result.task_complete || !pid_alive {
+        } else if !pid_alive || (is_exec && result.task_complete) {
             vec!["finished".to_string()]
         } else if matches!(status, SessionStatus::Waiting) {
             vec!["waiting for input".to_string()]
@@ -164,8 +175,12 @@ impl CodexCollector {
             vec!["thinking...".to_string()]
         };
 
-        // Context window
-        let context_percent = 0.0; // TODO: derive from response token usage when available
+        // Context window percentage from token usage
+        let context_percent = if result.context_window > 0 && result.last_context_tokens > 0 {
+            (result.last_context_tokens as f64 / result.context_window as f64) * 100.0
+        } else {
+            0.0
+        };
 
         // Children
         let mut children = Vec::new();
@@ -198,10 +213,10 @@ impl CodexCollector {
             status,
             model: result.model,
             context_percent,
-            total_input_tokens: 0,  // Codex JSONL doesn't include per-turn usage in token_count
-            total_output_tokens: 0,
-            total_cache_read: 0,
-            total_cache_create: 0,
+            total_input_tokens: result.total_input,
+            total_output_tokens: result.total_output,
+            total_cache_read: result.total_cache_read,
+            total_cache_create: 0, // Codex doesn't report cache write
             turn_count: result.turn_count,
             current_tasks,
             mem_mb,
@@ -209,7 +224,7 @@ impl CodexCollector {
             git_branch: result.git_branch,
             git_added,
             git_modified,
-            token_history: vec![],
+            token_history: result.token_history,
             subagents: vec![],
             mem_file_count: 0,
             mem_line_count: 0,
@@ -220,7 +235,8 @@ impl CodexCollector {
     }
 
     /// Find PIDs of running codex processes (the native binary, not node wrapper).
-    fn find_codex_pids() -> Vec<u32> {
+    /// Returns (pid, is_exec) tuples — `is_exec` is true for one-shot `codex exec` runs.
+    fn find_codex_pids() -> Vec<(u32, bool)> {
         let output = Command::new("ps")
             .args(["-eo", "pid,command"])
             .output()
@@ -233,13 +249,16 @@ impl CodexCollector {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 2 {
                     let cmd = parts[1..].join(" ");
-                    // Match the native codex binary running exec/interactive, skip app-server
-                    if cmd.contains("/codex") && (cmd.contains(" exec") || cmd.contains(" interactive"))
+                    // Match the native codex binary, skip app-server and node wrapper.
+                    // When invoked without subcommand, it defaults to interactive mode.
+                    let is_exec = cmd.contains(" exec");
+                    if cmd.contains("/codex")
                         && !cmd.contains("app-server")
                         && !cmd.contains("grep")
+                        && !cmd.starts_with("node ")
                     {
                         if let Ok(pid) = parts[0].trim().parse::<u32>() {
-                            pids.push(pid);
+                            pids.push((pid, is_exec));
                         }
                     }
                 }
@@ -301,6 +320,11 @@ struct CodexJSONLResult {
     task_complete: bool,
     last_activity: std::time::SystemTime,
     initial_prompt: String,
+    total_input: u64,
+    total_output: u64,
+    total_cache_read: u64,
+    last_context_tokens: u64,
+    token_history: Vec<u64>,
 }
 
 /// Parse a Codex rollout-*.jsonl file.
@@ -322,7 +346,7 @@ fn parse_codex_jsonl(path: &Path) -> Option<CodexJSONLResult> {
         session_id: String::new(),
         cwd: String::new(),
         started_at: 0,
-        model: String::from("?"),
+        model: String::from("-"),
         version: String::new(),
         git_branch: String::new(),
         context_window: 0,
@@ -331,6 +355,11 @@ fn parse_codex_jsonl(path: &Path) -> Option<CodexJSONLResult> {
         task_complete: false,
         last_activity: std::time::UNIX_EPOCH,
         initial_prompt: String::new(),
+        total_input: 0,
+        total_output: 0,
+        total_cache_read: 0,
+        last_context_tokens: 0,
+        token_history: Vec::new(),
     };
 
     for line in reader.lines() {
@@ -395,6 +424,32 @@ fn parse_codex_jsonl(path: &Path) -> Option<CodexJSONLResult> {
                             if let Some(msg) = payload["message"].as_str() {
                                 result.initial_prompt = msg.chars().take(120).collect();
                             }
+                        }
+                    }
+                    Some("token_count") => {
+                        let info = &payload["info"];
+                        // Use total_token_usage as cumulative snapshot for totals
+                        let total = &info["total_token_usage"];
+                        if total.is_object() {
+                            let inp = total["input_tokens"].as_u64().unwrap_or(0);
+                            let out = total["output_tokens"].as_u64().unwrap_or(0);
+                            let cache = total["cached_input_tokens"].as_u64()
+                                .or_else(|| total["cache_read_input_tokens"].as_u64())
+                                .unwrap_or(0);
+                            result.total_input = inp;
+                            result.total_output = out;
+                            result.total_cache_read = cache;
+                        }
+                        // Use last_token_usage for context % and sparkline
+                        let last = &info["last_token_usage"];
+                        if last.is_object() {
+                            let inp = last["input_tokens"].as_u64().unwrap_or(0);
+                            let out = last["output_tokens"].as_u64().unwrap_or(0);
+                            let cache = last["cached_input_tokens"].as_u64()
+                                .or_else(|| last["cache_read_input_tokens"].as_u64())
+                                .unwrap_or(0);
+                            result.last_context_tokens = inp + cache;
+                            result.token_history.push(inp + out + cache);
                         }
                     }
                     Some("agent_message") => {
