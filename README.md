@@ -47,6 +47,8 @@ abtop --once   # Print snapshot and exit
 abtop --setup  # Install rate limit collection hook
 ```
 
+Recommended terminal size: **120x40** or larger. Minimum 80x24 — panels hide gracefully when small.
+
 ## Supported Agents
 
 | Feature | Claude Code | Codex CLI |
