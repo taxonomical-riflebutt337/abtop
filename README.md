@@ -9,6 +9,37 @@ Currently supports **Claude Code** and **Codex CLI**.
 ## Install
 
 ```bash
+curl -L https://raw.githubusercontent.com/graykode/abtop/main/abtopup/install | bash
+```
+
+### Homebrew (macOS / Linux)
+
+```bash
+brew install graykode/tap/abtop
+```
+
+### Cargo (crates.io)
+
+```bash
+cargo install abtop
+```
+
+### Download Binary
+
+Pre-built binaries for macOS and Linux (x86_64 / aarch64) are available on the [GitHub Releases](https://github.com/graykode/abtop/releases) page.
+
+```bash
+# Example: macOS Apple Silicon
+curl -LO https://github.com/graykode/abtop/releases/latest/download/abtop-aarch64-apple-darwin.tar.gz
+tar xzf abtop-aarch64-apple-darwin.tar.gz
+sudo mv abtop /usr/local/bin/
+```
+
+### Build from Source
+
+```bash
+git clone https://github.com/graykode/abtop.git
+cd abtop
 cargo install --path .
 ```
 
