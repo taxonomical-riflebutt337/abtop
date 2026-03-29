@@ -396,14 +396,15 @@ fn draw_top_panel(f: &mut Frame, app: &App, area: Rect) {
 // ── tokens panel — maps to btop's ²mem panel ────────────────────────────────
 
 fn draw_tokens_panel(f: &mut Frame, app: &App, area: Rect) {
-    let selected = app.sessions.get(app.selected);
-    let total_in: u64 = selected.map(|s| s.total_input_tokens).unwrap_or(0);
-    let total_out: u64 = selected.map(|s| s.total_output_tokens).unwrap_or(0);
-    let total_cache: u64 = selected
+    let total_in: u64 = app.sessions.iter().map(|s| s.total_input_tokens).sum();
+    let total_out: u64 = app.sessions.iter().map(|s| s.total_output_tokens).sum();
+    let total_cache: u64 = app
+        .sessions
+        .iter()
         .map(|s| s.total_cache_read + s.total_cache_create)
-        .unwrap_or(0);
+        .sum();
     let total: u64 = total_in + total_out + total_cache;
-    let turns: u32 = selected.map(|s| s.turn_count).unwrap_or(0);
+    let turns: u32 = app.sessions.iter().map(|s| s.turn_count).sum();
     let avg = if turns > 0 { total / turns as u64 } else { 0 };
 
     // Compute percentages for mini meter bars
