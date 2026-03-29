@@ -156,11 +156,42 @@ git -C {cwd} status --porcelain       # clean/dirty check
 - Count lines in `MEMORY.md` (200 line limit, truncation = memory loss)
 
 ### 7. Rate limit
-- Statusline JSON (v2.1.80+): `rate_limits.session.used_percentage`, `rate_limits.weekly.used_percentage`
-- NOT persisted to disk.
-- **MVP approach**: show "—" (unavailable). No sparkline history without persistence.
-- **Future**: could write a Claude Code hook that pipes statusline rate_limit data to a local file that abtop reads. This is v0.2 scope.
-- This is an account-level metric, shared across all sessions.
+
+**Claude Code**: NOT in transcript JSONL (verified — `message.usage` has no `rate_limits` field).
+Only available via StatusLine mechanism: a shell command configured in `settings.json` that receives JSON on stdin (not an env var) after each assistant message (debounced 300ms).
+
+StatusLine JSON includes:
+```json
+{
+  "rate_limits": {
+    "five_hour": { "used_percentage": 23.5, "resets_at": 1738425600 },
+    "seven_day": { "used_percentage": 41.2, "resets_at": 1738857600 }
+  }
+}
+```
+
+To collect: user must configure a StatusLine script that writes to a file abtop reads.
+`abtop --setup` could automate this (writes script + updates `~/.claude/settings.json`).
+- `rate_limits` is optional — only present for Pro/Max subscribers after first API response.
+- Per-model breakdown (e.g. "Sonnet only") is NOT available.
+- Account-level metric, shared across all sessions.
+- Show "—" when StatusLine not configured or data unavailable.
+
+**Codex CLI**: Available in session JSONL without any setup.
+`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` `token_count` events include:
+```json
+{
+  "rate_limits": {
+    "limit_id": "codex",
+    "primary": { "used_percent": 9.0, "window_minutes": 300, "resets_at": 1774686045 },
+    "secondary": { "used_percent": 14.0, "window_minutes": 10080, "resets_at": 1775186466 },
+    "plan_type": "plus"
+  }
+}
+```
+- Included in every `token_count` event (every assistant turn).
+- Read via same tail-follow strategy as transcript parsing.
+- `plan_type` may affect field presence (verified on `plus` plan only, as of 2026-03-29).
 
 ### 8. Other files
 - `~/.claude/stats-cache.json` — daily aggregates. Only updated on `/stats`, NOT real-time.

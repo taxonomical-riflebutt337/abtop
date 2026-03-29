@@ -59,7 +59,7 @@ pub struct AgentSession {
     pub total_cache_read: u64,
     pub total_cache_create: u64,
     pub turn_count: u32,
-    pub current_task: String,
+    pub current_tasks: Vec<String>,
     pub mem_mb: u64,
     pub version: String,
     pub git_branch: String,

@@ -197,17 +197,15 @@ pub fn draw(f: &mut Frame, app: &App) {
     let mid_panels = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(25), // tokens
-            Constraint::Percentage(25), // usage
-            Constraint::Percentage(25), // projects
-            Constraint::Percentage(25), // ports
+            Constraint::Percentage(33), // tokens
+            Constraint::Percentage(34), // projects
+            Constraint::Percentage(33), // ports
         ])
         .split(chunks[2]);
 
     draw_tokens_panel(f, app, mid_panels[0]);
-    draw_usage_panel(f, app, mid_panels[1]);
-    draw_projects_panel(f, app, mid_panels[2]);
-    draw_ports_panel(f, app, mid_panels[3]);
+    draw_projects_panel(f, app, mid_panels[1]);
+    draw_ports_panel(f, app, mid_panels[2]);
     draw_sessions_panel(f, app, chunks[3]);
     draw_footer(f, app, chunks[4]);
 }
@@ -503,78 +501,6 @@ fn draw_tokens_panel(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-// ── usage panel — rate limits for Claude Code / Codex ────────────────────────
-
-fn draw_usage_panel(f: &mut Frame, app: &App, area: Rect) {
-    let cpu_grad = make_gradient(CPU_START, CPU_MID, CPU_END);
-    let mut lines = Vec::new();
-
-    if app.rate_limits.is_empty() {
-        lines.push(Line::from(Span::styled(
-            " no data",
-            Style::default().fg(INACTIVE_FG),
-        )));
-        lines.push(Line::from(Span::styled(
-            " run: abtop --setup",
-            Style::default().fg(GRAPH_TEXT),
-        )));
-    } else {
-        let bar_w = (area.width as usize).saturating_sub(18).min(15).max(5);
-
-        for rl in &app.rate_limits {
-            let label = rl.source.to_uppercase();
-            lines.push(Line::from(Span::styled(
-                format!(" {}", label),
-                Style::default().fg(TITLE).add_modifier(Modifier::BOLD),
-            )));
-
-            // 5-hour window
-            if let Some(pct) = rl.five_hour_pct {
-                let reset_str = rl.five_hour_resets_at
-                    .map(|ts| format_reset_time(ts))
-                    .unwrap_or_default();
-                let pct_color = grad_at(&cpu_grad, pct);
-                let mut spans = vec![styled_label(" 5h ")];
-                spans.extend(meter_bar(pct, bar_w, &cpu_grad));
-                spans.push(Span::styled(
-                    format!(" {:>3.0}%", pct),
-                    Style::default().fg(pct_color),
-                ));
-                if !reset_str.is_empty() {
-                    spans.push(Span::styled(
-                        format!(" {}", reset_str),
-                        Style::default().fg(GRAPH_TEXT),
-                    ));
-                }
-                lines.push(Line::from(spans));
-            }
-
-            // 7-day window
-            if let Some(pct) = rl.seven_day_pct {
-                let reset_str = rl.seven_day_resets_at
-                    .map(|ts| format_reset_time(ts))
-                    .unwrap_or_default();
-                let pct_color = grad_at(&cpu_grad, pct);
-                let mut spans = vec![styled_label(" 7d ")];
-                spans.extend(meter_bar(pct, bar_w, &cpu_grad));
-                spans.push(Span::styled(
-                    format!(" {:>3.0}%", pct),
-                    Style::default().fg(pct_color),
-                ));
-                if !reset_str.is_empty() {
-                    spans.push(Span::styled(
-                        format!(" {}", reset_str),
-                        Style::default().fg(GRAPH_TEXT),
-                    ));
-                }
-                lines.push(Line::from(spans));
-            }
-        }
-    }
-
-    let block = btop_block("usage", "⁵", CPU_BOX);
-    f.render_widget(Paragraph::new(lines).block(block), area);
-}
 
 /// Format a reset timestamp as relative time (e.g., "1h 23m")
 fn format_reset_time(reset_ts: u64) -> String {
@@ -590,8 +516,10 @@ fn format_reset_time(reset_ts: u64) -> String {
         format!("{}s", diff)
     } else if diff < 3600 {
         format!("{}m", diff / 60)
-    } else {
+    } else if diff < 86400 {
         format!("{}h {}m", diff / 3600, (diff % 3600) / 60)
+    } else {
+        format!("{}d {}h", diff / 86400, (diff % 86400) / 3600)
     }
 }
 
