@@ -83,7 +83,7 @@ fn print_snapshot(app: &App) {
             &session.session_id
         };
         let project_label = format!("{}({})", session.project_name, sid_short);
-        let summary = if session.initial_prompt.is_empty() { "—" } else { &session.initial_prompt };
+        let summary = app.session_summary(session);
         println!(
             "  {} {:<20} {} {} {:<10} CTX:{:>3.0}% Tok:{} Mem:{}M {}",
             session.pid,
