@@ -2,6 +2,7 @@ use crate::collector::{MultiCollector, read_rate_limits};
 use crate::model::{AgentSession, OrphanPort, RateLimitInfo, SessionStatus};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc;
+use std::time::Instant;
 
 /// Maximum data points kept for the live token-rate graph.
 const GRAPH_HISTORY_LEN: usize = 200;
@@ -48,6 +49,8 @@ pub struct App {
     summary_tx: mpsc::Sender<(String, String, Option<String>)>,
     /// Ports left open by processes whose parent sessions have ended.
     pub orphan_ports: Vec<OrphanPort>,
+    /// Transient status message shown in the footer (auto-clears after 3s).
+    pub status_msg: Option<(String, Instant)>,
 }
 
 impl App {
@@ -70,8 +73,15 @@ impl App {
             summary_rx: rx,
             summary_tx: tx,
             orphan_ports: Vec::new(),
+            status_msg: None,
         }
     }
+
+    /// Set a transient status message that auto-clears after 3 seconds.
+    pub fn set_status(&mut self, msg: String) {
+        self.status_msg = Some((msg, Instant::now()));
+    }
+
 
     pub fn tick(&mut self) {
         self.sessions = self.collector.collect();
@@ -233,26 +243,53 @@ impl App {
         self.should_quit = true;
     }
 
-    /// Jump to the tmux pane running the selected session's Claude process.
-    /// Returns a message string for the UI status bar.
+    /// Jump to the terminal running the selected session's Claude process.
+    /// Tries tmux first, then iTerm2/Terminal.app via AppleScript on macOS.
+    /// Returns a message string for the UI status bar, or None on success.
     pub fn jump_to_session(&self) -> Option<String> {
-        if std::env::var("TMUX").is_err() {
-            return Some("no tmux".to_string());
-        }
         if self.sessions.is_empty() {
             return None;
         }
         let session = &self.sessions[self.selected];
         let target_pid = session.pid;
 
-        // Get all tmux panes with their shell PIDs
+        // Try tmux first if we're inside tmux
+        if std::env::var("TMUX").is_ok() {
+            if let Some(msg) = self.jump_via_tmux(target_pid) {
+                return Some(msg);
+            }
+            return None;
+        }
+
+        // Fallback: macOS terminal app via AppleScript
+        #[cfg(target_os = "macos")]
+        {
+            // Find the tty of the target process
+            let tty = find_tty_for_pid(target_pid);
+            if let Some(tty) = tty {
+                // Try iTerm2 first, then Terminal.app
+                if jump_iterm2_by_tty(&tty) {
+                    return None;
+                }
+                if jump_terminal_app_by_tty(&tty) {
+                    return None;
+                }
+            }
+            Some("tab not found".to_string())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Some("tmux required".to_string())
+        }
+    }
+
+    fn jump_via_tmux(&self, target_pid: u32) -> Option<String> {
         let output = std::process::Command::new("tmux")
             .args(["list-panes", "-a", "-F", "#{pane_pid} #{session_name}:#{window_index}.#{pane_index}"])
             .output()
             .ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
 
-        // For each pane, check if the target PID is a descendant of the pane's shell PID
         for line in stdout.lines() {
             let mut parts = line.splitn(2, ' ');
             let pane_pid: u32 = match parts.next().and_then(|p| p.parse().ok()) {
@@ -268,13 +305,12 @@ impl App {
                 let _ = std::process::Command::new("tmux")
                     .args(["select-pane", "-t", pane_target])
                     .status();
-                // Also select the window (select-pane alone won't switch windows)
                 if let Some(window) = pane_target.split('.').next() {
                     let _ = std::process::Command::new("tmux")
                         .args(["select-window", "-t", window])
                         .status();
                 }
-                return None;
+                return None; // success
             }
         }
 
@@ -462,6 +498,93 @@ fn is_descendant_of(target: u32, ancestor: u32) -> bool {
         }
     }
     false
+}
+
+/// Find the controlling tty for a PID (walks up process tree to find one with a tty).
+#[cfg(target_os = "macos")]
+fn find_tty_for_pid(pid: u32) -> Option<String> {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "tty=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    let tty = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if tty.is_empty() || tty == "??" {
+        // Walk up to parent
+        let ppid_out = std::process::Command::new("ps")
+            .args(["-o", "ppid=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        let ppid: u32 = String::from_utf8_lossy(&ppid_out.stdout).trim().parse().ok()?;
+        if ppid <= 1 || ppid == pid {
+            return None;
+        }
+        return find_tty_for_pid(ppid);
+    }
+    Some(tty)
+}
+
+/// Jump to an iTerm2 tab/session by matching the tty.
+#[cfg(target_os = "macos")]
+fn jump_iterm2_by_tty(tty: &str) -> bool {
+    let script = format!(
+        r#"tell application "System Events"
+    if not (exists process "iTerm2") then return false
+end tell
+tell application "iTerm2"
+    repeat with w in windows
+        repeat with t in tabs of w
+            repeat with s in sessions of t
+                if tty of s ends with "{tty}" then
+                    select t
+                    set index of w to 1
+                    activate
+                    return true
+                end if
+            end repeat
+        end repeat
+    end repeat
+end tell
+return false"#,
+        tty = tty
+    );
+    let output = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .output();
+    match output {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).trim() == "true",
+        Err(_) => false,
+    }
+}
+
+/// Jump to a Terminal.app tab by matching the tty.
+#[cfg(target_os = "macos")]
+fn jump_terminal_app_by_tty(tty: &str) -> bool {
+    let script = format!(
+        r#"tell application "System Events"
+    if not (exists process "Terminal") then return false
+end tell
+tell application "Terminal"
+    repeat with w in windows
+        repeat with t in tabs of w
+            if tty of t ends with "{tty}" then
+                set selected tab of w to t
+                set index of w to 1
+                activate
+                return true
+            end if
+        end repeat
+    end repeat
+end tell
+return false"#,
+        tty = tty
+    );
+    let output = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .output();
+    match output {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).trim() == "true",
+        Err(_) => false,
+    }
 }
 
 fn save_summary_cache(summaries: &HashMap<String, String>) {
