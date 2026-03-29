@@ -199,7 +199,7 @@ impl App {
         } else if self.pending_summaries.contains(&session.session_id) {
             "...".to_string()
         } else if !session.initial_prompt.is_empty() {
-            sanitize_fallback(&session.initial_prompt, 50)
+            sanitize_fallback(&session.initial_prompt, 28)
         } else {
             "—".to_string()
         }
@@ -228,7 +228,7 @@ fn generate_summary(prompt: &str) -> Option<String> {
         .spawn()
     {
         Ok(c) => c,
-        Err(_) => return Some(sanitize_fallback(prompt, 50)),
+        Err(_) => return Some(sanitize_fallback(prompt, 28)),
     };
 
     // Write prompt via stdin (no shell injection)
@@ -236,56 +236,24 @@ fn generate_summary(prompt: &str) -> Option<String> {
         let _ = stdin.write_all(request.as_bytes());
     }
 
-    // Drain stdout in a background thread to prevent pipe-full deadlock,
-    // while polling the child with try_wait + timeout in this thread.
-    let stdout = child.stdout.take();
-    let stdout_handle = std::thread::spawn(move || {
-        use std::io::Read;
-        let mut buf = Vec::new();
-        if let Some(mut out) = stdout {
-            let _ = out.read_to_end(&mut buf);
-        }
-        buf
+    // Run wait_with_output in a helper thread so we can apply a bounded timeout.
+    // This drains stdout internally, avoiding pipe-full deadlock.
+    let child_pid = child.id();
+    let (wo_tx, wo_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = wo_tx.send(child.wait_with_output());
     });
 
-    let timeout = Duration::from_secs(10);
-    let start = std::time::Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break Some(s),
-            Ok(None) => {
-                if start.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait(); // reap to avoid zombie
-                    break None;
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break None;
-            }
-        }
-    };
-
-    let status = match status {
-        Some(s) => s,
-        None => {
-            // After kill+wait the pipe is closed, so the reader should finish.
-            // Detach the thread rather than blocking indefinitely on join —
-            // if a descendant kept stdout open, we don't want to hang here.
-            drop(stdout_handle);
+    let result = match wo_rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(r) => r,
+        Err(_) => {
+            // Timeout or disconnected — kill the child so the helper thread can exit.
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &child_pid.to_string()])
+                .status();
             return None;
         }
     };
-
-    let stdout_bytes = stdout_handle.join().unwrap_or_default();
-    let result: Result<std::process::Output, std::io::Error> = Ok(std::process::Output {
-        status,
-        stdout: stdout_bytes,
-        stderr: Vec::new(),
-    });
 
     let fallback = sanitize_fallback(prompt, 28);
 
