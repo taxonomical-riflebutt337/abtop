@@ -556,7 +556,7 @@ fn draw_tokens_panel(f: &mut Frame, app: &App, area: Rect) {
     ];
 
     let panel_title = if let Some(s) = selected {
-        format!("tokens ({})", truncate_str(&s.project_name, 12))
+        format!("tokens ({}/{})", truncate_str(&s.project_name, 12), truncate_str(&s.session_id, 8))
     } else {
         "tokens".to_string()
     };
