@@ -4,7 +4,7 @@
 
 See every Claude Code and Codex CLI session at a glance — token usage, context window %, rate limits, child processes, open ports, and more.
 
-![demo](demo.gif)
+<video src="https://github.com/user-attachments/assets/d50b7c1b-ed81-44a2-903f-902d4de911ae" width="100%" autoplay loop muted></video>
 
 ## Why
 
@@ -68,29 +68,29 @@ tmux new -s work
 
 ## Supported Agents
 
-| Feature | Claude Code | Codex CLI |
-|---------|:-----------:|:---------:|
-| Session Discovery | ✅ | ✅ |
-| Token Tracking | ✅ | ✅ |
-| Context Window % | ✅ | ✅ |
-| Status Detection | ✅ | ✅ |
-| Current Task | ✅ | ✅ |
-| Rate Limit | ✅ | ✅ |
-| Git Status | ✅ | ✅ |
-| Children / Ports | ✅ | ✅ |
-| Subagents | ✅ | ❌ |
-| Memory Status | ✅ | ❌ |
+| Feature           | Claude Code | Codex CLI |
+| ----------------- | :---------: | :-------: |
+| Session Discovery |     ✅      |    ✅     |
+| Token Tracking    |     ✅      |    ✅     |
+| Context Window %  |     ✅      |    ✅     |
+| Status Detection  |     ✅      |    ✅     |
+| Current Task      |     ✅      |    ✅     |
+| Rate Limit        |     ✅      |    ✅     |
+| Git Status        |     ✅      |    ✅     |
+| Children / Ports  |     ✅      |    ✅     |
+| Subagents         |     ✅      |    ❌     |
+| Memory Status     |     ✅      |    ❌     |
 
 ## Key Bindings
 
-| Key | Action |
-|-----|--------|
-| `↑`/`↓` or `k`/`j` | Select session |
-| `Enter` | Jump to session terminal (tmux only) |
-| `x` | Kill selected session |
-| `X` | Kill all orphan ports |
-| `q` | Quit |
-| `r` | Force refresh |
+| Key                | Action                               |
+| ------------------ | ------------------------------------ |
+| `↑`/`↓` or `k`/`j` | Select session                       |
+| `Enter`            | Jump to session terminal (tmux only) |
+| `x`                | Kill selected session                |
+| `X`                | Kill all orphan ports                |
+| `q`                | Quit                                 |
+| `r`                | Force refresh                        |
 
 ## Privacy
 
