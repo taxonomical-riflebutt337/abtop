@@ -176,16 +176,9 @@ fn run_update() -> io::Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     println!("abtop v{current} — checking for updates...\n");
 
-    #[cfg(unix)]
     let status = std::process::Command::new("sh")
         .arg("-c")
         .arg("curl --proto '=https' --tlsv1.2 -LsSf https://github.com/graykode/abtop/releases/latest/download/abtop-installer.sh | sh")
-        .status()?;
-
-    #[cfg(windows)]
-    let status = std::process::Command::new("powershell")
-        .args(["-ExecutionPolicy", "Bypass", "-Command",
-            "irm https://github.com/graykode/abtop/releases/latest/download/abtop-installer.ps1 | iex"])
         .status()?;
 
     if !status.success() {
