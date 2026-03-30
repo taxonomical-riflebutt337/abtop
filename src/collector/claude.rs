@@ -432,18 +432,22 @@ struct TranscriptResult {
     first_assistant_text: String,
 }
 
-/// Get file identity as (inode, mtime_nanos) for detecting file replacement.
+/// Get file identity for detecting file replacement.
+/// Unix: (inode, mtime_nanos). Windows: (file_size, mtime_nanos).
 fn file_identity(path: &Path) -> (u64, u64) {
     fs::metadata(path)
         .ok()
         .map(|m| {
-            let ino = m.ino();
+            #[cfg(unix)]
+            let id = m.ino();
+            #[cfg(not(unix))]
+            let id = m.len();
             let mtime_ns = m.modified()
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_nanos() as u64)
                 .unwrap_or(0);
-            (ino, mtime_ns)
+            (id, mtime_ns)
         })
         .unwrap_or((0, 0))
 }

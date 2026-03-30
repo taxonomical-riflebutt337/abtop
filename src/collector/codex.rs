@@ -472,25 +472,34 @@ fn parse_codex_jsonl(path: &Path) -> Option<CodexJSONLResult> {
                         if let Some(cw) = info["model_context_window"].as_u64() {
                             result.context_window = cw;
                         }
-                        // Rate limits: primary = 5h window, secondary = 7d window
-                        // Lives at payload.rate_limits (NOT inside info)
+                        // Rate limits: assign to 5h/7d slots based on window_minutes.
+                        // Plus plans: primary=5h(300min), secondary=7d(10080min).
+                        // Free plans: primary=7d(10080min), secondary=null.
                         let rl = &payload["rate_limits"];
                         if rl.is_object() {
-                            let primary = &rl["primary"];
-                            let secondary = &rl["secondary"];
-                            // Use event timestamp so newer events always win;
-                            // leave updated_at unset if no timestamp is available.
                             let event_secs = val["timestamp"].as_str()
                                 .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
                                 .map(|dt| dt.timestamp() as u64);
-                            result.rate_limit = Some(RateLimitInfo {
+                            let mut info = RateLimitInfo {
                                 source: "codex".to_string(),
-                                five_hour_pct: primary["used_percent"].as_f64(),
-                                five_hour_resets_at: primary["resets_at"].as_u64(),
-                                seven_day_pct: secondary["used_percent"].as_f64(),
-                                seven_day_resets_at: secondary["resets_at"].as_u64(),
                                 updated_at: event_secs,
-                            });
+                                ..Default::default()
+                            };
+                            for slot in &["primary", "secondary"] {
+                                let w = &rl[slot];
+                                if !w.is_object() { continue; }
+                                let mins = w["window_minutes"].as_u64().unwrap_or(0);
+                                let pct = w["used_percent"].as_f64();
+                                let resets = w["resets_at"].as_u64();
+                                if mins <= 300 {
+                                    info.five_hour_pct = pct;
+                                    info.five_hour_resets_at = resets;
+                                } else {
+                                    info.seven_day_pct = pct;
+                                    info.seven_day_resets_at = resets;
+                                }
+                            }
+                            result.rate_limit = Some(info);
                         }
                     }
                     Some("agent_message") => {
