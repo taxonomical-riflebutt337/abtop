@@ -67,10 +67,7 @@ impl ClaudeCollector {
         let proc_cmd = process_info.get(&sf.pid).map(|p| p.command.as_str());
         let pid_alive = proc_cmd
             .map(|c| {
-                c.split_whitespace().any(|tok| {
-                    let base = tok.rsplit('/').next().unwrap_or(tok);
-                    base == "claude"
-                })
+                process::cmd_has_binary(c, "claude")
             })
             .unwrap_or(false);
 
@@ -753,10 +750,7 @@ fn is_claude_process(pid: u32) -> bool {
     match output {
         Some(out) => {
             let cmd = String::from_utf8_lossy(&out.stdout);
-            cmd.split_whitespace().any(|tok| {
-                let base = tok.rsplit('/').next().unwrap_or(tok);
-                base == "claude"
-            })
+            process::cmd_has_binary(&cmd, "claude")
         }
         None => false,
     }
