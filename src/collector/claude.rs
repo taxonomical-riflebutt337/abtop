@@ -7,7 +7,6 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 pub struct ClaudeCollector {
     sessions_dir: PathBuf,
@@ -27,7 +26,7 @@ impl ClaudeCollector {
         }
     }
 
-    pub fn collect(&mut self, shared: &super::SharedProcessData) -> Vec<AgentSession> {
+    fn collect_sessions(&mut self, shared: &super::SharedProcessData) -> Vec<AgentSession> {
         let session_files = match fs::read_dir(&self.sessions_dir) {
             Ok(entries) => entries,
             Err(_) => return vec![],
@@ -286,7 +285,6 @@ impl ClaudeCollector {
             mem_file_count,
             mem_line_count,
             children,
-            transcript_offset: 0,
             initial_prompt,
             first_assistant_text,
         })
@@ -356,10 +354,6 @@ impl ClaudeCollector {
                 Err(_) => continue,
             };
 
-            let agent_type = meta_val.get("agentType")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string();
             let description = meta_val.get("description")
                 .and_then(|v| v.as_str())
                 .unwrap_or("agent")
@@ -402,7 +396,6 @@ impl ClaudeCollector {
 
             subagents.push(SubAgent {
                 name,
-                agent_type,
                 status,
                 tokens,
             });
@@ -433,6 +426,11 @@ impl ClaudeCollector {
     }
 }
 
+impl super::AgentCollector for ClaudeCollector {
+    fn collect(&mut self, shared: &super::SharedProcessData) -> Vec<AgentSession> {
+        self.collect_sessions(shared)
+    }
+}
 
 struct TranscriptResult {
     model: String,
@@ -737,22 +735,6 @@ fn truncate(s: &str, max: usize) -> String {
     } else {
         let truncated: String = s.chars().take(max - 1).collect();
         format!("{}…", truncated)
-    }
-}
-
-#[allow(dead_code)]
-fn is_claude_process(pid: u32) -> bool {
-    let output = Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "command="])
-        .output()
-        .ok();
-
-    match output {
-        Some(out) => {
-            let cmd = String::from_utf8_lossy(&out.stdout);
-            process::cmd_has_binary(&cmd, "claude")
-        }
-        None => false,
     }
 }
 

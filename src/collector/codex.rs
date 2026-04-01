@@ -34,7 +34,7 @@ impl CodexCollector {
         }
     }
 
-    pub fn collect(&mut self, shared: &super::SharedProcessData) -> Vec<AgentSession> {
+    fn collect_sessions(&mut self, shared: &super::SharedProcessData) -> Vec<AgentSession> {
         if !self.sessions_dir.exists() {
             self.last_rate_limit = None;
             return vec![];
@@ -257,7 +257,6 @@ impl CodexCollector {
             mem_file_count: 0,
             mem_line_count: 0,
             children,
-            transcript_offset: 0,
             initial_prompt: result.initial_prompt,
             first_assistant_text: String::new(),
         }, rate_limit))
@@ -318,6 +317,16 @@ impl CodexCollector {
         map
     }
 
+}
+
+impl super::AgentCollector for CodexCollector {
+    fn collect(&mut self, shared: &super::SharedProcessData) -> Vec<AgentSession> {
+        self.collect_sessions(shared)
+    }
+
+    fn live_rate_limit(&self) -> Option<RateLimitInfo> {
+        self.last_rate_limit.clone().or_else(super::rate_limit::read_codex_cache)
+    }
 }
 
 /// Parsed result from a Codex rollout JSONL file.
