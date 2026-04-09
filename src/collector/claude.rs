@@ -3,7 +3,7 @@ use crate::model::{AgentSession, ChildProcess, SessionFile, SessionStatus, SubAg
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -564,13 +564,17 @@ fn parse_transcript(path: &Path, from_offset: u64) -> TranscriptResult {
     let mut line_buf = String::new();
     loop {
         line_buf.clear();
-        match reader.read_line(&mut line_buf) {
+        // Bounded read: take(MAX+1) physically caps the allocation. Without
+        // this, a malformed or hostile transcript with an unbounded line
+        // would OOM the process before any length check could fire.
+        match reader.by_ref().take(MAX_LINE_BYTES as u64 + 1).read_line(&mut line_buf) {
             Ok(0) => break,
             Ok(n) => {
-                // Skip oversized lines to prevent OOM from malformed input
-                if line_buf.len() > MAX_LINE_BYTES {
-                    bytes_read += n as u64;
-                    continue;
+                // Cap hit without a newline — malformed/hostile line. Skip
+                // to end of file; we'll re-evaluate when file_identity changes.
+                if line_buf.len() > MAX_LINE_BYTES && !line_buf.ends_with('\n') {
+                    bytes_read = file_len;
+                    break;
                 }
                 let has_newline = line_buf.ends_with('\n');
                 let line = line_buf.trim();

@@ -165,9 +165,18 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, demo_mode: boo
     Ok(())
 }
 
-/// Strip control characters (including ANSI escapes) from a string for safe terminal output.
+/// Strip control characters (including ANSI escapes) and Unicode bidi
+/// overrides from a string for safe terminal output. Defeats CVE-2021-42574
+/// (Trojan Source) style attacks via RTLO/LRO/PDF/isolate characters.
 fn sanitize_output(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control() || *c == ' ').collect()
+    s.chars()
+        .filter(|c| (!c.is_control() || *c == ' ')
+            && !matches!(*c,
+                '\u{202A}'..='\u{202E}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{200E}'
+                | '\u{200F}'))
+        .collect()
 }
 
 fn print_snapshot(app: &App) {
@@ -217,9 +226,13 @@ fn run_update() -> io::Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     println!("abtop v{current} — checking for updates...\n");
 
-    // Download installer to a temporary file before executing (avoid curl|sh pipe)
-    let tmp_dir = std::env::temp_dir();
-    let installer = tmp_dir.join("abtop-installer.sh");
+    // Download to a private temp file (O_EXCL + random suffix) so a local
+    // attacker can't pre-place a symlink or swap the file mid-run.
+    let tmp = tempfile::Builder::new()
+        .prefix("abtop-installer-")
+        .suffix(".sh")
+        .tempfile()?;
+    let installer_path = tmp.path().to_path_buf();
 
     let dl_status = std::process::Command::new("curl")
         .args([
@@ -229,7 +242,7 @@ fn run_update() -> io::Result<()> {
             "https://github.com/graykode/abtop/releases/latest/download/abtop-installer.sh",
             "-o",
         ])
-        .arg(&installer)
+        .arg(&installer_path)
         .status()?;
 
     if !dl_status.success() {
@@ -240,15 +253,16 @@ fn run_update() -> io::Result<()> {
 
     // Show checksum so the user can verify if desired
     let _ = std::process::Command::new("sha256sum")
-        .arg(&installer)
+        .arg(&installer_path)
         .status();
 
     let status = std::process::Command::new("sh")
-        .arg(&installer)
+        .arg(&installer_path)
         .status()?;
 
-    // Clean up
-    let _ = std::fs::remove_file(&installer);
+    // NamedTempFile::drop removes the file; explicit drop to sequence it
+    // after sh exits.
+    drop(tmp);
 
     if !status.success() {
         eprintln!("\nUpdate failed. You can also update manually:");
