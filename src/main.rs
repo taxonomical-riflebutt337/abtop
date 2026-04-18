@@ -170,7 +170,7 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, demo_mode: boo
 /// (Trojan Source) style attacks via RTLO/LRO/PDF/isolate characters.
 fn sanitize_output(s: &str) -> String {
     s.chars()
-        .filter(|c| (!c.is_control() || *c == ' ')
+        .filter(|c| !c.is_control()
             && !matches!(*c,
                 '\u{202A}'..='\u{202E}'
                 | '\u{2066}'..='\u{2069}'
@@ -251,10 +251,19 @@ fn run_update() -> io::Result<()> {
         std::process::exit(1);
     }
 
-    // Show checksum so the user can verify if desired
-    let _ = std::process::Command::new("sha256sum")
+    // Show checksum so the user can verify if desired.
+    // macOS ships `shasum` (Perl) by default, Linux ships `sha256sum` (coreutils).
+    let checksum_shown = std::process::Command::new("shasum")
+        .args(["-a", "256"])
         .arg(&installer_path)
-        .status();
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !checksum_shown {
+        let _ = std::process::Command::new("sha256sum")
+            .arg(&installer_path)
+            .status();
+    }
 
     let status = std::process::Command::new("sh")
         .arg(&installer_path)
