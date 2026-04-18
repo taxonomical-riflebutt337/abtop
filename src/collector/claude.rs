@@ -3,7 +3,7 @@ use crate::model::{AgentSession, ChildProcess, SessionFile, SessionStatus, SubAg
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -19,8 +19,10 @@ pub struct ClaudeCollector {
 impl ClaudeCollector {
     pub fn new() -> Self {
         let base = std::env::var("CLAUDE_CONFIG_DIR")
+            .ok()
             .map(PathBuf::from)
-            .unwrap_or_else(|_| dirs::home_dir().unwrap_or_default().join(".claude"));
+            .filter(|p| p.is_dir())
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".claude"));
         Self {
             sessions_dir: base.join("sessions"),
             projects_dir: base.join("projects"),
@@ -38,6 +40,10 @@ impl ClaudeCollector {
         for entry in session_files.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            // Skip symlinks to avoid reading unintended files
+            if entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(true) {
                 continue;
             }
 
@@ -63,7 +69,8 @@ impl ClaudeCollector {
         ports: &HashMap<u32, Vec<u16>>,
     ) -> Option<AgentSession> {
         let content = fs::read_to_string(path).ok()?;
-        let sf: SessionFile = serde_json::from_str(&content).ok()?;
+        let mut sf: SessionFile = serde_json::from_str(&content).ok()?;
+        sf.sanitize();
 
         let proc_cmd = process_info.get(&sf.pid).map(|p| p.command.as_str());
         let pid_alive = proc_cmd
@@ -231,7 +238,11 @@ impl ClaudeCollector {
             .get(&sf.pid)
             .cloned()
             .unwrap_or_default();
+        let mut visited = std::collections::HashSet::new();
         while let Some(cpid) = stack.pop() {
+            if !visited.insert(cpid) {
+                continue;
+            }
             if let Some(cproc) = process_info.get(&cpid) {
                 let port = ports.get(&cpid).and_then(|v| v.first().copied());
                 children.push(ChildProcess {
@@ -308,7 +319,7 @@ impl ClaudeCollector {
         // Primary: look up by encoded cwd
         let encoded = encode_cwd_path(cwd);
         let path = self.projects_dir.join(&encoded).join(&jsonl_name);
-        if path.exists() {
+        if path.exists() && !is_symlink(&path) {
             return Some(path);
         }
 
@@ -317,11 +328,14 @@ impl ClaudeCollector {
         // may not match the encoded cwd from the session file.
         if let Ok(entries) = fs::read_dir(&self.projects_dir) {
             for entry in entries.flatten() {
+                if entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(true) {
+                    continue;
+                }
                 if !entry.path().is_dir() {
                     continue;
                 }
                 let candidate = entry.path().join(&jsonl_name);
-                if candidate.exists() {
+                if candidate.exists() && !is_symlink(&candidate) {
                     return Some(candidate);
                 }
             }
@@ -342,6 +356,9 @@ impl ClaudeCollector {
         // Collect meta files and their corresponding jsonl files
         let mut meta_files: Vec<PathBuf> = Vec::new();
         for entry in entries.flatten() {
+            if entry.file_type().map(|ft| ft.is_symlink()).unwrap_or(true) {
+                continue;
+            }
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 if name.ends_with(".meta.json") {
@@ -469,6 +486,14 @@ struct TranscriptResult {
     first_assistant_text: String,
 }
 
+/// Check if a path is a symlink without following it.
+/// Defaults to true on error (fail-closed: skip if we can't verify).
+fn is_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(true)
+}
+
 /// Get file identity as (inode, mtime_nanos) for detecting file replacement.
 fn file_identity(path: &Path) -> (u64, u64) {
     fs::metadata(path)
@@ -533,13 +558,24 @@ fn parse_transcript(path: &Path, from_offset: u64) -> TranscriptResult {
         .unwrap_or(std::time::UNIX_EPOCH);
     result.last_activity = mtime;
 
+    const MAX_LINE_BYTES: usize = 10 * 1024 * 1024; // 10 MB
+
     let mut bytes_read = from_offset;
     let mut line_buf = String::new();
     loop {
         line_buf.clear();
-        match reader.read_line(&mut line_buf) {
+        // Bounded read: take(MAX+1) physically caps the allocation. Without
+        // this, a malformed or hostile transcript with an unbounded line
+        // would OOM the process before any length check could fire.
+        match reader.by_ref().take(MAX_LINE_BYTES as u64 + 1).read_line(&mut line_buf) {
             Ok(0) => break,
             Ok(n) => {
+                // Cap hit without a newline — malformed/hostile line. Skip
+                // to end of file; we'll re-evaluate when file_identity changes.
+                if line_buf.len() > MAX_LINE_BYTES && !line_buf.ends_with('\n') {
+                    bytes_read = file_len;
+                    break;
+                }
                 let has_newline = line_buf.ends_with('\n');
                 let line = line_buf.trim();
                 if line.is_empty() {
@@ -589,8 +625,10 @@ fn parse_transcript(path: &Path, from_offset: u64) -> TranscriptResult {
                                     if result.last_context_tokens > result.max_context_tokens {
                                         result.max_context_tokens = result.last_context_tokens;
                                     }
-                                    // Track per-turn total tokens for sparkline
-                                    result.token_history.push(inp + out + cr + cc);
+                                    // Track per-turn total tokens for sparkline (cap to prevent OOM)
+                                    if result.token_history.len() < 10_000 {
+                                        result.token_history.push(inp + out + cr + cc);
+                                    }
                                 }
                                 // Extract first assistant text (text blocks only) for summary fallback
                                 if result.first_assistant_text.is_empty() {
@@ -722,10 +760,10 @@ fn extract_tool_arg(tool_use: &Value) -> String {
         if let Some(fp) = input.get("file_path").and_then(|f| f.as_str()) {
             return shorten_path(fp);
         }
-        // Bash: command (first 40 chars)
+        // Bash: command (first 40 chars, redact secrets)
         if let Some(cmd) = input.get("command").and_then(|c| c.as_str()) {
             let short = cmd.lines().next().unwrap_or(cmd);
-            return truncate(short, 40);
+            return super::redact_secrets(&truncate(short, 40));
         }
         // Grep/Glob: pattern
         if let Some(pat) = input.get("pattern").and_then(|p| p.as_str()) {

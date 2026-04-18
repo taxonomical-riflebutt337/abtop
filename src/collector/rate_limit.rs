@@ -37,6 +37,7 @@ pub fn read_rate_limits() -> Vec<RateLimitInfo> {
     if let Some(claude_dir) = std::env::var("CLAUDE_CONFIG_DIR")
         .ok()
         .map(PathBuf::from)
+        .filter(|p| p.is_dir())
         .or_else(|| dirs::home_dir().map(|h| h.join(".claude")))
     {
         let path = claude_dir.join(CLAUDE_RATE_FILE);

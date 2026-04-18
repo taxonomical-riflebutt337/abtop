@@ -222,8 +222,22 @@ impl App {
         // Check if we have a pending confirmation for this exact session
         if let Some((idx, ts)) = self.kill_confirm.take() {
             if idx == self.selected && ts.elapsed().as_secs() < 2 {
-                // Confirmed — actually kill
+                // Confirmed — verify PID still runs expected binary before killing
                 let pid = session.pid;
+                let verified = std::process::Command::new("ps")
+                    .args(["-p", &pid.to_string(), "-o", "command="])
+                    .output()
+                    .ok()
+                    .map(|output| {
+                        let cmd = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        crate::collector::process::cmd_has_binary(&cmd, "claude")
+                            || crate::collector::process::cmd_has_binary(&cmd, "codex")
+                    })
+                    .unwrap_or(false);
+                if !verified {
+                    self.set_status(format!("PID {} is no longer a claude/codex process", pid));
+                    return;
+                }
                 let _ = std::process::Command::new("kill")
                     .args(["-9", &pid.to_string()])
                     .output();
@@ -536,6 +550,9 @@ fn save_summary_cache(summaries: &HashMap<String, String>) {
     let path = cache_path();
     let _ = std::fs::create_dir_all(cache_dir());
     if let Ok(json) = serde_json::to_string(summaries) {
-        let _ = std::fs::write(&path, json);
+        let tmp = path.with_extension("tmp");
+        if std::fs::write(&tmp, &json).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
     }
 }
