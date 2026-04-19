@@ -55,6 +55,10 @@ pub struct App {
     /// Kill confirmation: (selected_index, timestamp). Expires after 2s.
     kill_confirm: Option<(usize, Instant)>,
     pub theme: Theme,
+    /// Session filter: when non-empty, only matching sessions are shown.
+    pub filter_text: String,
+    /// True when the filter input bar is capturing keystrokes.
+    pub filter_active: bool,
 }
 
 impl App {
@@ -80,6 +84,8 @@ impl App {
             status_msg: None,
             kill_confirm: None,
             theme,
+            filter_text: String::new(),
+            filter_active: false,
         }
     }
 
@@ -200,14 +206,47 @@ impl App {
         })
     }
 
+    /// Returns indices of sessions matching the current filter.
+    pub fn visible_indices(&self) -> Vec<usize> {
+        if self.filter_text.is_empty() {
+            return (0..self.sessions.len()).collect();
+        }
+        let query = self.filter_text.to_lowercase();
+        self.sessions.iter().enumerate()
+            .filter(|(_, s)| {
+                s.project_name.to_lowercase().contains(&query)
+                    || s.model.to_lowercase().contains(&query)
+                    || s.session_id.to_lowercase().contains(&query)
+                    || s.initial_prompt.to_lowercase().contains(&query)
+                    || s.cwd.to_lowercase().contains(&query)
+                    || format!("{:?}", s.status).to_lowercase().contains(&query)
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     pub fn select_next(&mut self) {
-        if !self.sessions.is_empty() {
-            self.selected = (self.selected + 1).min(self.sessions.len() - 1);
+        let visible = self.visible_indices();
+        if visible.is_empty() { return; }
+        if let Some(pos) = visible.iter().position(|&i| i == self.selected) {
+            if pos + 1 < visible.len() {
+                self.selected = visible[pos + 1];
+            }
+        } else if let Some(&first) = visible.first() {
+            self.selected = first;
         }
     }
 
     pub fn select_prev(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+        let visible = self.visible_indices();
+        if visible.is_empty() { return; }
+        if let Some(pos) = visible.iter().position(|&i| i == self.selected) {
+            if pos > 0 {
+                self.selected = visible[pos - 1];
+            }
+        } else if let Some(&last) = visible.last() {
+            self.selected = last;
+        }
     }
 
     pub fn kill_selected(&mut self) {

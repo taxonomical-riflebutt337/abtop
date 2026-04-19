@@ -124,20 +124,38 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, demo_mode: boo
         let had_input = if event::poll(render_interval)? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('q') => app.quit(),
-                        KeyCode::Char('r') if !demo_mode => app.tick(),
-                        KeyCode::Down | KeyCode::Char('j') => app.select_next(),
-                        KeyCode::Up | KeyCode::Char('k') => app.select_prev(),
-                        KeyCode::Char('x') if !demo_mode => app.kill_selected(),
-                        KeyCode::Char('X') if !demo_mode => app.kill_orphan_ports(),
-                        KeyCode::Char('t') => app.cycle_theme(),
-                        KeyCode::Enter if !demo_mode => {
-                            if let Some(msg) = app.jump_to_session() {
-                                app.set_status(msg);
+                    if app.filter_active {
+                        match key.code {
+                            KeyCode::Esc => {
+                                app.filter_active = false;
+                                app.filter_text.clear();
                             }
-                        },
-                        _ => {}
+                            KeyCode::Enter => {
+                                app.filter_active = false;
+                            }
+                            KeyCode::Backspace => { app.filter_text.pop(); }
+                            KeyCode::Char(c) => { app.filter_text.push(c); }
+                            KeyCode::Down => app.select_next(),
+                            KeyCode::Up => app.select_prev(),
+                            _ => {}
+                        }
+                    } else {
+                        match key.code {
+                            KeyCode::Char('q') => app.quit(),
+                            KeyCode::Char('r') if !demo_mode => app.tick(),
+                            KeyCode::Down | KeyCode::Char('j') => app.select_next(),
+                            KeyCode::Up | KeyCode::Char('k') => app.select_prev(),
+                            KeyCode::Char('x') if !demo_mode => app.kill_selected(),
+                            KeyCode::Char('X') if !demo_mode => app.kill_orphan_ports(),
+                            KeyCode::Char('t') => app.cycle_theme(),
+                            KeyCode::Char('/') => { app.filter_active = true; }
+                            KeyCode::Enter if !demo_mode => {
+                                if let Some(msg) = app.jump_to_session() {
+                                    app.set_status(msg);
+                                }
+                            },
+                            _ => {}
+                        }
                     }
                 }
             }

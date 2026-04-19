@@ -20,8 +20,9 @@ pub(crate) fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect, theme: &
         height: area.height.saturating_sub(2),
     };
 
-    // Session list: 1 header + 2 rows per session (main + 1 task line)
-    let session_rows: u16 = app.sessions.len() as u16 * 2;
+    // Session list: 1 header + 2 rows per visible session (main + 1 task line)
+    let visible = app.visible_indices();
+    let session_rows: u16 = visible.len() as u16 * 2;
     // Fixed detail height: keeps the detail panel stable regardless of content
     let detail_reserve: u16 = 10.min(inner.height / 2);
     let max_table = inner.height.saturating_sub(detail_reserve);
@@ -67,7 +68,9 @@ pub(crate) fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect, theme: &
     let context_label = if w >= 100 { "Context" } else { "Ctx" };
     let tokens_w: u16 = if w >= 100 { 7 } else { 5 };
 
-    for (i, session) in app.sessions.iter().enumerate() {
+    let visible = app.visible_indices();
+    for &i in &visible {
+        let session = &app.sessions[i];
         let selected = i == app.selected;
         let marker = if selected { "►" } else { " " };
 
@@ -233,7 +236,8 @@ pub(crate) fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect, theme: &
     }
 
     // Scroll: each session = 2 rows. Ensure selected session is visible.
-    let total_rows = app.sessions.len() * 2;
+    let visible_sessions = app.visible_indices();
+    let total_rows = visible_sessions.len() * 2;
     let needs_scroll = total_rows > panel_chunks[0].height.saturating_sub(1) as usize;
 
     // Split table area into [table | scrollbar(1)] when scrollable
@@ -252,7 +256,8 @@ pub(crate) fn draw_sessions_panel(f: &mut Frame, app: &App, area: Rect, theme: &
     }
 
     let visible_rows = table_area.height.saturating_sub(1) as usize; // -1 for header
-    let selected_row_start = app.selected * 2;
+    let selected_pos = visible_sessions.iter().position(|&i| i == app.selected).unwrap_or(0);
+    let selected_row_start = selected_pos * 2;
     let selected_row_end = selected_row_start + 2;
     let scroll_offset = selected_row_end.saturating_sub(visible_rows);
     let visible = if scroll_offset < rows.len() {
