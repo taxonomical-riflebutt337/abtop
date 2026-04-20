@@ -7,7 +7,7 @@ mod setup;
 mod theme;
 mod ui;
 
-use app::App;
+use app::{App, JumpOutcome};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
@@ -159,9 +159,9 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, demo_mode: boo
                             KeyCode::Esc if !app.filter_text.is_empty() => app.clear_filter(),
                             KeyCode::Enter if !demo_mode => {
                                 match app.jump_to_session() {
-                                    None if exit_on_jump => app.quit(), // jump succeeded
-                                    Some(msg) => app.set_status(msg),  // jump failed
-                                    None => {}                         // success, keep running
+                                    JumpOutcome::Jumped if exit_on_jump => app.quit(),
+                                    JumpOutcome::Failed(msg) => app.set_status(msg),
+                                    JumpOutcome::Jumped | JumpOutcome::NoOp => {}
                                 }
                             },
                             _ => {}
