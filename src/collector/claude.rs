@@ -7,6 +7,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+#[cfg(all(not(target_os = "linux"), not(target_vendor = "apple")))]
 use std::process::Command;
 
 /// A single Claude config directory (sessions + projects + transcripts).
@@ -33,7 +34,7 @@ impl ConfigDir {
 }
 
 #[derive(Debug, Default)]
-struct LsofProcessInfo {
+struct ProcessOpenPaths {
     cwd: Option<PathBuf>,
     paths: Vec<PathBuf>,
 }
@@ -124,21 +125,12 @@ impl ClaudeCollector {
             }
         }
 
-        let mut sessions = Vec::new();
-        let mut seen_ids = std::collections::HashSet::new();
-        for (path, config) in &session_paths {
-            if let Some(session) = self.load_session(
-                path,
-                config,
-                &shared.process_info,
-                &shared.children_map,
-                &shared.ports,
-            ) {
-                if seen_ids.insert(session.session_id.clone()) {
-                    sessions.push(session);
-                }
-            }
-        }
+        let mut sessions = self.load_session_paths(
+            &session_paths,
+            &shared.process_info,
+            &shared.children_map,
+            &shared.ports,
+        );
 
         // Evict transcript cache for sessions that no longer exist
         let active_ids: std::collections::HashSet<&str> =
@@ -147,6 +139,27 @@ impl ClaudeCollector {
             .retain(|sid, _| active_ids.contains(sid.as_str()));
 
         sessions.sort_by_key(|s| std::cmp::Reverse(s.started_at));
+        sessions
+    }
+
+    fn load_session_paths(
+        &mut self,
+        session_paths: &[(PathBuf, ConfigDir)],
+        process_info: &HashMap<u32, ProcInfo>,
+        children_map: &HashMap<u32, Vec<u32>>,
+        ports: &HashMap<u32, Vec<u16>>,
+    ) -> Vec<AgentSession> {
+        let mut sessions = Vec::new();
+        let mut seen_ids = std::collections::HashSet::new();
+        for (path, config) in session_paths {
+            if let Some(session) =
+                self.load_session(path, config, process_info, children_map, ports)
+            {
+                if seen_ids.insert(session.session_id.clone()) {
+                    sessions.push(session);
+                }
+            }
+        }
         sessions
     }
 
@@ -166,15 +179,22 @@ impl ClaudeCollector {
             return Vec::new();
         }
 
-        let lsof = Self::map_pid_to_lsof(&pids);
+        let open_paths = Self::map_pid_to_open_paths(&pids);
+        Self::session_paths_from_open_paths(&pids, &open_paths)
+    }
+
+    fn session_paths_from_open_paths(
+        pids: &[u32],
+        open_paths: &HashMap<u32, ProcessOpenPaths>,
+    ) -> Vec<(PathBuf, ConfigDir)> {
         let mut paths = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
 
-        for pid in pids {
-            let Some(info) = lsof.get(&pid) else {
+        for &pid in pids {
+            let Some(info) = open_paths.get(&pid) else {
                 continue;
             };
-            for config in config_dirs_from_lsof_info(info) {
+            for config in config_dirs_from_open_paths(info) {
                 let Some(path) = find_session_file_for_pid(&config.sessions_dir, pid) else {
                     continue;
                 };
@@ -198,21 +218,25 @@ impl ClaudeCollector {
         pids
     }
 
-    fn map_pid_to_lsof(pids: &[u32]) -> HashMap<u32, LsofProcessInfo> {
+    fn map_pid_to_open_paths(pids: &[u32]) -> HashMap<u32, ProcessOpenPaths> {
         if pids.is_empty() {
             return HashMap::new();
         }
 
-        let pid_args: Vec<String> = pids.iter().map(|p| format!("-p{}", p)).collect();
-        let mut args = vec!["-F", "ftn"];
-        for pa in &pid_args {
-            args.push(pa);
+        #[cfg(target_os = "linux")]
+        {
+            map_pid_to_proc_open_paths(pids)
         }
 
-        let output = Command::new("lsof").args(&args).output().ok();
-        output
-            .map(|out| parse_lsof_process_info(&String::from_utf8_lossy(&out.stdout)))
-            .unwrap_or_default()
+        #[cfg(target_vendor = "apple")]
+        {
+            map_pid_to_libproc_open_paths(pids)
+        }
+
+        #[cfg(all(not(target_os = "linux"), not(target_vendor = "apple")))]
+        {
+            map_pid_to_lsof_open_paths(pids)
+        }
     }
 
     fn load_session(
@@ -633,8 +657,85 @@ impl super::AgentCollector for ClaudeCollector {
     }
 }
 
-fn parse_lsof_process_info(output: &str) -> HashMap<u32, LsofProcessInfo> {
-    let mut map: HashMap<u32, LsofProcessInfo> = HashMap::new();
+#[cfg(target_os = "linux")]
+fn map_pid_to_proc_open_paths(pids: &[u32]) -> HashMap<u32, ProcessOpenPaths> {
+    let mut map = HashMap::new();
+
+    for &pid in pids {
+        let cwd = fs::read_link(format!("/proc/{}/cwd", pid)).ok();
+        let entries = match fs::read_dir(format!("/proc/{}/fd", pid)) {
+            Ok(entries) => entries,
+            Err(_) => {
+                if cwd.is_some() {
+                    map.insert(
+                        pid,
+                        ProcessOpenPaths {
+                            cwd,
+                            paths: Vec::new(),
+                        },
+                    );
+                }
+                continue;
+            }
+        };
+
+        let paths = entries
+            .flatten()
+            .filter_map(|entry| fs::read_link(entry.path()).ok())
+            .filter(|path| path.is_absolute())
+            .collect();
+        map.insert(pid, ProcessOpenPaths { cwd, paths });
+    }
+
+    map
+}
+
+#[cfg(target_vendor = "apple")]
+fn map_pid_to_libproc_open_paths(pids: &[u32]) -> HashMap<u32, ProcessOpenPaths> {
+    use proc_pidinfo::{
+        proc_pidfdinfo, proc_pidinfo_list, Pid, ProcFDInfo, ProcFDType, VnodeFdInfoWithPath,
+    };
+
+    let mut map = HashMap::new();
+
+    for &raw_pid in pids {
+        let pid = Pid(raw_pid);
+        let fds = match proc_pidinfo_list::<ProcFDInfo>(pid) {
+            Ok(fds) => fds,
+            Err(_) => continue,
+        };
+
+        let paths = fds
+            .into_iter()
+            .filter(|fd| fd.fd_type() == Ok(ProcFDType::VNODE))
+            .filter_map(|fd| proc_pidfdinfo::<VnodeFdInfoWithPath>(pid, fd.proc_fd).ok())
+            .flatten()
+            .filter_map(|vnode| vnode.path().ok().map(PathBuf::from))
+            .collect();
+
+        map.insert(raw_pid, ProcessOpenPaths { cwd: None, paths });
+    }
+
+    map
+}
+
+#[cfg(all(not(target_os = "linux"), not(target_vendor = "apple")))]
+fn map_pid_to_lsof_open_paths(pids: &[u32]) -> HashMap<u32, ProcessOpenPaths> {
+    let pid_args: Vec<String> = pids.iter().map(|p| format!("-p{}", p)).collect();
+    let mut args = vec!["-F", "ftn"];
+    for pa in &pid_args {
+        args.push(pa);
+    }
+
+    let output = Command::new("lsof").args(&args).output().ok();
+    output
+        .map(|out| parse_lsof_process_info(&String::from_utf8_lossy(&out.stdout)))
+        .unwrap_or_default()
+}
+
+#[cfg_attr(any(target_os = "linux", target_vendor = "apple"), allow(dead_code))]
+fn parse_lsof_process_info(output: &str) -> HashMap<u32, ProcessOpenPaths> {
+    let mut map: HashMap<u32, ProcessOpenPaths> = HashMap::new();
     let mut current_pid: Option<u32> = None;
     let mut current_fd = String::new();
 
@@ -666,7 +767,7 @@ fn parse_lsof_process_info(output: &str) -> HashMap<u32, LsofProcessInfo> {
     map
 }
 
-fn config_dirs_from_lsof_info(info: &LsofProcessInfo) -> Vec<ConfigDir> {
+fn config_dirs_from_open_paths(info: &ProcessOpenPaths) -> Vec<ConfigDir> {
     let mut candidates = Vec::new();
     if let Some(cwd) = &info.cwd {
         candidates.push(cwd.clone());
@@ -1234,6 +1335,23 @@ mod tests {
         .unwrap();
     }
 
+    fn write_transcript(projects: &Path, cwd: &Path, session_id: &str, prompt: &str) -> PathBuf {
+        let transcript_dir = projects.join(encode_cwd_path(cwd.to_str().unwrap()));
+        std::fs::create_dir_all(&transcript_dir).unwrap();
+        let transcript = transcript_dir.join(format!("{}.jsonl", session_id));
+        std::fs::write(
+            &transcript,
+            format!(
+                r#"{{"type":"user","timestamp":"2026-03-28T15:00:00Z","message":{{"role":"user","content":"{}"}}}}
+{{"type":"assistant","timestamp":"2026-03-28T15:00:05Z","message":{{"model":"claude-sonnet-4-6","usage":{{"input_tokens":12,"output_tokens":6,"cache_read_input_tokens":3,"cache_creation_input_tokens":0}},"content":[{{"type":"text","text":"done"}}]}}}}
+"#,
+                prompt
+            ),
+        )
+        .unwrap();
+        transcript
+    }
+
     fn make_proc_info(pid: u32, command: &str) -> HashMap<u32, ProcInfo> {
         let mut process_info = HashMap::new();
         process_info.insert(
@@ -1281,7 +1399,7 @@ n/Users/bob/.claude-alt/projects/-Users-bob-project/session.jsonl
     }
 
     #[test]
-    fn test_config_dirs_from_lsof_info_finds_profile_root_and_ignores_project_claude_dir() {
+    fn test_config_dirs_from_open_paths_finds_profile_root_and_ignores_project_claude_dir() {
         let temp = tempfile::tempdir().unwrap();
         let profile = temp.path().join(".claude-work");
         std::fs::create_dir_all(profile.join("sessions")).unwrap();
@@ -1291,7 +1409,7 @@ n/Users/bob/.claude-alt/projects/-Users-bob-project/session.jsonl
         std::fs::create_dir_all(&project_claude).unwrap();
         std::fs::write(project_claude.join("settings.local.json"), "{}").unwrap();
 
-        let info = LsofProcessInfo {
+        let info = ProcessOpenPaths {
             cwd: Some(temp.path().join("repo")),
             paths: vec![
                 project_claude,
@@ -1303,10 +1421,130 @@ n/Users/bob/.claude-alt/projects/-Users-bob-project/session.jsonl
             ],
         };
 
-        let configs = config_dirs_from_lsof_info(&info);
+        let configs = config_dirs_from_open_paths(&info);
 
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].base_dir(), profile);
+    }
+
+    #[test]
+    fn test_config_dirs_from_open_paths_finds_profile_root_without_cwd() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = temp.path().join(".claude-work");
+        std::fs::create_dir_all(profile.join("sessions")).unwrap();
+        let projects = profile.join("projects");
+        std::fs::create_dir_all(&projects).unwrap();
+
+        let info = ProcessOpenPaths {
+            cwd: None,
+            paths: vec![projects.join("-tmp-repo").join("session.jsonl")],
+        };
+
+        let configs = config_dirs_from_open_paths(&info);
+
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].base_dir(), profile);
+    }
+
+    #[test]
+    fn test_session_paths_from_open_paths_maps_pid_to_session_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = temp.path().join(".claude-work");
+        let sessions = profile.join("sessions");
+        let projects = profile.join("projects");
+        let cwd = temp.path().join("repo");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let pid = 4242;
+        let session_path = sessions.join(format!("{}.json", pid));
+        write_session_file(&session_path, pid, "session-4242", &cwd);
+
+        let mut open_paths = HashMap::new();
+        open_paths.insert(
+            pid,
+            ProcessOpenPaths {
+                cwd: None,
+                paths: vec![projects.join("-tmp-repo").join("session-4242.jsonl")],
+            },
+        );
+
+        let discovered = ClaudeCollector::session_paths_from_open_paths(&[pid], &open_paths);
+
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].0, session_path);
+        assert_eq!(discovered[0].1.base_dir(), profile);
+    }
+
+    #[test]
+    fn test_session_paths_from_open_paths_deduplicates_same_session_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = temp.path().join(".claude-work");
+        let sessions = profile.join("sessions");
+        let projects = profile.join("projects");
+        let cwd = temp.path().join("repo");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let pid = 4242;
+        let session_path = sessions.join(format!("{}.json", pid));
+        write_session_file(&session_path, pid, "session-4242", &cwd);
+
+        let mut open_paths = HashMap::new();
+        open_paths.insert(
+            pid,
+            ProcessOpenPaths {
+                cwd: None,
+                paths: vec![
+                    projects.join("-tmp-repo").join("session-4242.jsonl"),
+                    sessions.join(format!("{}.json", pid)),
+                    profile.clone(),
+                ],
+            },
+        );
+
+        let discovered = ClaudeCollector::session_paths_from_open_paths(&[pid], &open_paths);
+
+        assert_eq!(discovered.len(), 1);
+        assert_eq!(discovered[0].0, session_path);
+    }
+
+    #[test]
+    fn test_collect_sessions_deduplicates_active_and_scanned_session_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = temp.path().join(".claude-work");
+        let sessions = profile.join("sessions");
+        let projects = profile.join("projects");
+        let cwd = temp.path().join("repo");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let pid = 4242;
+        let session_id = "session-4242";
+        let session_path = sessions.join(format!("{}.json", pid));
+        write_session_file(&session_path, pid, session_id, &cwd);
+        write_transcript(&projects, &cwd, session_id, "dedup prompt");
+
+        let config = ConfigDir::new(profile.clone());
+        let process_info = make_proc_info(pid, "claude");
+        let mut collector = ClaudeCollector::new();
+        collector.config_dirs = vec![config.clone()];
+        let session_paths = vec![
+            (session_path.clone(), config.clone()),
+            (session_path.clone(), config),
+        ];
+        let sessions = collector.load_session_paths(
+            &session_paths,
+            &process_info,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, session_id);
     }
 
     #[test]
@@ -1344,6 +1582,25 @@ n/Users/bob/.claude-alt/projects/-Users-bob-project/session.jsonl
     }
 
     #[test]
+    fn test_find_session_file_for_pid_rejects_symlinked_session_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let cwd = temp.path().join("repo");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let real_direct = temp.path().join("real-direct.json");
+        write_session_file(&real_direct, 4242, "direct", &cwd);
+        std::os::unix::fs::symlink(&real_direct, sessions.join("4242.json")).unwrap();
+
+        let real_fallback = temp.path().join("real-fallback.json");
+        write_session_file(&real_fallback, 4242, "fallback", &cwd);
+        std::os::unix::fs::symlink(&real_fallback, sessions.join("fallback.json")).unwrap();
+
+        assert!(find_session_file_for_pid(&sessions, 4242).is_none());
+    }
+
+    #[test]
     fn test_find_claude_pids_excludes_print_sessions() {
         let mut process_info = HashMap::new();
         process_info.insert(
@@ -1353,7 +1610,7 @@ n/Users/bob/.claude-alt/projects/-Users-bob-project/session.jsonl
                 ppid: 1,
                 rss_kb: 1,
                 cpu_pct: 0.0,
-                command: "claude --dangerously-skip-permissions".to_string(),
+                command: "claude".to_string(),
             },
         );
         process_info.insert(
@@ -1413,6 +1670,89 @@ n/Users/bob/.claude-alt/projects/-Users-bob-project/session.jsonl
     }
 
     #[test]
+    fn test_find_transcript_in_config_rejects_symlinked_exact_and_fallback_matches() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = temp.path().join(".claude-work");
+        let projects = profile.join("projects");
+        let cwd = temp.path().join("repo");
+        std::fs::create_dir_all(profile.join("sessions")).unwrap();
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let session_id = "session-1";
+        let real_exact = temp.path().join("real-exact.jsonl");
+        std::fs::write(&real_exact, "{}\n").unwrap();
+        let exact_dir = projects.join(encode_cwd_path(cwd.to_str().unwrap()));
+        std::fs::create_dir_all(&exact_dir).unwrap();
+        std::os::unix::fs::symlink(&real_exact, exact_dir.join(format!("{}.jsonl", session_id)))
+            .unwrap();
+
+        let real_fallback = temp.path().join("real-fallback.jsonl");
+        std::fs::write(&real_fallback, "{}\n").unwrap();
+        let fallback_dir = projects.join("actual-worktree");
+        std::fs::create_dir_all(&fallback_dir).unwrap();
+        std::os::unix::fs::symlink(
+            &real_fallback,
+            fallback_dir.join(format!("{}.jsonl", session_id)),
+        )
+        .unwrap();
+
+        let config = ConfigDir::new(profile);
+
+        assert!(ClaudeCollector::find_transcript_in_config(
+            &config,
+            cwd.to_str().unwrap(),
+            session_id
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_open_paths_without_cwd_loads_session_from_same_config_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = temp.path().join(".claude-work");
+        let sessions = profile.join("sessions");
+        let projects = profile.join("projects");
+        let cwd = temp.path().join("repo");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        let pid = 5151;
+        let session_id = "session-5151";
+        let session_path = sessions.join(format!("{}.json", pid));
+        write_session_file(&session_path, pid, session_id, &cwd);
+        let transcript = write_transcript(&projects, &cwd, session_id, "libproc prompt");
+
+        let mut open_paths = HashMap::new();
+        open_paths.insert(
+            pid,
+            ProcessOpenPaths {
+                cwd: None,
+                paths: vec![transcript],
+            },
+        );
+        let discovered = ClaudeCollector::session_paths_from_open_paths(&[pid], &open_paths);
+        let process_info = make_proc_info(pid, "claude");
+        let mut collector = ClaudeCollector::new();
+
+        assert_eq!(discovered.len(), 1);
+        let session = collector
+            .load_session(
+                &discovered[0].0,
+                &discovered[0].1,
+                &process_info,
+                &HashMap::new(),
+                &HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(session.session_id, session_id);
+        assert_eq!(session.initial_prompt, "libproc prompt");
+        assert_eq!(session.total_input_tokens, 12);
+    }
+
+    #[test]
     fn test_load_session_uses_non_default_config_root() {
         let temp = tempfile::tempdir().unwrap();
         let profile = temp.path().join(".claude-work");
@@ -1439,7 +1779,7 @@ n/Users/bob/.claude-alt/projects/-Users-bob-project/session.jsonl
         .unwrap();
 
         let mut collector = ClaudeCollector::new();
-        let process_info = make_proc_info(pid, "claude --dangerously-skip-permissions");
+        let process_info = make_proc_info(pid, "claude");
         let children_map = HashMap::new();
         let ports = HashMap::new();
         let config = ConfigDir::new(profile);
