@@ -822,8 +822,14 @@ fn find_session_file_for_pid(sessions_dir: &Path, pid: u32) -> Option<PathBuf> {
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let content = fs::read_to_string(&path).ok()?;
-        let session: SessionFile = serde_json::from_str(&content).ok()?;
+        // Skip files we can't read or parse — one bad file shouldn't abort
+        // the whole fallback search (previously `?` bubbled out of the loop).
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(session) = serde_json::from_str::<SessionFile>(&content) else {
+            continue;
+        };
         if session.pid == pid {
             return Some(path);
         }
@@ -1560,6 +1566,27 @@ n/Users/bob/.claude-alt/projects/-Users-bob-project/session.jsonl
         assert_eq!(
             find_session_file_for_pid(&sessions, 4242).as_deref(),
             Some(session_path.as_path()),
+        );
+    }
+
+    #[test]
+    fn test_find_session_file_for_pid_skips_bad_files_and_continues() {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let cwd = temp.path().join("repo");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        // A malformed JSON file that appears before the real one on-disk.
+        // Previously the `?` operator made one bad file abort the whole
+        // fallback search; now the loop must skip it and still find the match.
+        std::fs::write(sessions.join("aaa-broken.json"), "not json at all").unwrap();
+        let target = sessions.join("zzz-valid.json");
+        write_session_file(&target, 9999, "session-9999", &cwd);
+
+        assert_eq!(
+            find_session_file_for_pid(&sessions, 9999).as_deref(),
+            Some(target.as_path()),
         );
     }
 
